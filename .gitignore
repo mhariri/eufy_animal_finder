@@ -1,0 +1,38 @@
+# Private state and credentials
+.env
+.env.*
+!.env.example
+**/.eufy-state/
+**/credentials.json
+**/mega-session.json
+**/persistent.json
+# Footage, model weights, dependencies, captures
+clips/
+wildlife_results/
+.models/
+.venv/
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+*.log
+*.mp4
+*.mov
+*.h264
+*.h265
+*.aac
+*.pcap
+*.pcapng
+*.apk
+*.pt
+*.pth
+*.pem
+*.key
+# Mac worker runtime
+inbox/
+results/
+claims/
+worker*.lock
+worker*.pid
+heartbeat*.json
+STOP

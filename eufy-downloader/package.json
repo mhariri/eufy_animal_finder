@@ -1,0 +1,14 @@
+{
+  "name": "eufy-animal-finder-downloader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only HomeBase 3 archive retrieval for local wildlife review",
+  "license": "ISC",
+  "engines": {
+    "node": ">=24.5.0"
+  },
+  "dependencies": {
+    "@mega-yfue/eufy-sdk": "file:../vendor/eufy-sdk"
+  }
+}
