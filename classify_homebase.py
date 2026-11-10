@@ -286,6 +286,8 @@ def rebuild_indexes(final=False):
             label='confirmed by frame review' if not r.get('automatic',True) else 'automatic candidate'
             lines.append(f'- [{r["videoFile"]}]({review_link(r)}) — {label}.\n')
         lines.append('\n')
+    if (VIDEOS/'identified/PHONE_EXPORT_ADDITIONS.md').exists():
+        lines.append('[Additional reviewed animals from phone exports](identified/PHONE_EXPORT_ADDITIONS.md) — kept separately from HomeBase archive coverage.\n\n')
     lines.append('[Rain-only candidates](RAIN_ONLY_CANDIDATES.md) · [Uncertain clips](UNCERTAIN.md)\n')
     (VIDEOS/'INDEX.md').write_text(''.join(lines))
     rain=['# Rain-only candidates\n\nFrame-based candidates with no person or animal detected in the sampled views. Review before deleting from HomeBase. No HomeBase deletion is performed by this pipeline.\n\n']
@@ -298,6 +300,7 @@ def rebuild_indexes(final=False):
     relative=os.path.relpath(VIDEOS,collection)
     animal_index=''.join(lines)
     for r in results:animal_index=animal_index.replace(f']({review_link(r)})',f']({relative}/{review_link(r)})')
+    animal_index=animal_index.replace('](identified/PHONE_EXPORT_ADDITIONS.md)',f']({relative}/identified/PHONE_EXPORT_ADDITIONS.md)')
     animal_index=animal_index.replace('](RAIN_ONLY_CANDIDATES.md)',f']({relative}/RAIN_ONLY_CANDIDATES.md)').replace('](UNCERTAIN.md)',f']({relative}/UNCERTAIN.md)')
     (collection/'INDEX.md').write_text(animal_index)
     return status
