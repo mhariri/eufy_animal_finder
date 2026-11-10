@@ -36,6 +36,11 @@ function receive(session,request,channel=1,traceFile=null){
   const timer=setTimeout(()=>finish(new Error('Transfer did not finish within 90 seconds')),90000);
   function finish(error){if(settled)return;settled=true;clearTimeout(timer);session.off('data',onData);session.off('close',onClose);if(traceFile){fs.writeFileSync(traceFile+'.media-summary.json',JSON.stringify(observedMedia),{mode:0o600});fs.writeFileSync(traceFile+'.control.json',JSON.stringify(control),{mode:0o600});}if(traceFile)fs.writeFileSync(traceFile,JSON.stringify(frames.map(f=>({...f,raw:f.raw.toString('base64')}))),{mode:0o600});error?reject(error):resolve(frames);}
   function onData(f){
+   if(f.dataType===2&&[1024,1350].includes(f.commandId)&&[0,channel,255].includes(f.channel)&&Buffer.isBuffer(f.data)&&f.data.length===4){
+    const resultCode=f.data.readInt32LE(0);
+    control.push({cmd:f.commandId,channel:f.channel,resultCode});
+    if(resultCode<0)return finish(new Error(`Archive request refused (${resultCode})`));
+   }
    if([1300,1301].includes(f.commandId)){
     const shape=`${f.commandId}:${f.dataType}:${f.channel}`;
     observedMedia[shape]=(observedMedia[shape]??0)+1;
