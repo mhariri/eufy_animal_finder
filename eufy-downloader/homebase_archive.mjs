@@ -32,14 +32,22 @@ async function query(session,admin,cmd,payload){
 }
 function receive(session,request,channel=1,traceFile=null){
  return new Promise((resolve,reject)=>{
-  const frames=[];let bytes=0,settled=false;const control=[];
+  const frames=[];let bytes=0,settled=false,mediaChannel;const control=[];const observedMedia={};
   const timer=setTimeout(()=>finish(new Error('Transfer did not finish within 90 seconds')),90000);
-  function finish(error){if(settled)return;settled=true;clearTimeout(timer);session.off('data',onData);session.off('close',onClose);if(traceFile){fs.writeFileSync(traceFile+'.control.json',JSON.stringify(control),{mode:0o600});}if(traceFile)fs.writeFileSync(traceFile,JSON.stringify(frames.map(f=>({...f,raw:f.raw.toString('base64')}))),{mode:0o600});error?reject(error):resolve(frames);}
+  function finish(error){if(settled)return;settled=true;clearTimeout(timer);session.off('data',onData);session.off('close',onClose);if(traceFile){fs.writeFileSync(traceFile+'.media-summary.json',JSON.stringify(observedMedia),{mode:0o600});fs.writeFileSync(traceFile+'.control.json',JSON.stringify(control),{mode:0o600});}if(traceFile)fs.writeFileSync(traceFile,JSON.stringify(frames.map(f=>({...f,raw:f.raw.toString('base64')}))),{mode:0o600});error?reject(error):resolve(frames);}
   function onData(f){
+   if([1300,1301].includes(f.commandId)){
+    const shape=`${f.commandId}:${f.dataType}:${f.channel}`;
+    observedMedia[shape]=(observedMedia[shape]??0)+1;
+   }
    if([1303,1304].includes(f.commandId))control.push({cmd:f.commandId,channel:f.channel,signCode:f.signCode,dataType:f.dataType,body:Buffer.isBuffer(f.data)?f.data.toString('hex'):null});
    if(f.commandId===1304&&f.dataType===2&&[0,channel,255].includes(f.channel))return finish();
 
-   if(f.dataType!==3||f.channel!==channel||![1300,1301].includes(f.commandId))return;
+   // This exclusive session has one archive request. Historical files retain
+   // their original media channel, independent of the current camera channel.
+   if(f.dataType!==3||![1300,1301].includes(f.commandId))return;
+   if(mediaChannel===undefined)mediaChannel=f.channel;
+   if(f.channel!==mediaChannel)return finish(new Error('Mixed archive media channels'));
    frames.push({commandId:f.commandId,signCode:f.signCode,channel:f.channel,raw:Buffer.from(f.raw)});bytes+=f.raw.length;
    if(bytes>64*1024*1024)finish(new Error('Transfer exceeded investigation limit'));
   }
@@ -102,17 +110,21 @@ try{
    if(downloaded+failed>=limit)break;
    const id=crypto.createHash('sha256').update(row.storage_path).digest('hex').slice(0,20);
    if(process.argv[4]&&process.argv[4]!==id)continue;
+   if(row.station_sn!==station.sn)throw new Error('Archive row belongs to another station');
    const folder=`${root}/${id}`;fs.mkdirSync(folder,{recursive:true,mode:0o700});
    if(fs.existsSync(`${folder}/metadata.json`))continue;
    const errorPath=`${folder}/error.json`;
    const priorError=fs.existsSync(errorPath)?JSON.parse(fs.readFileSync(errorPath)):null;
    const attemptLimit=Number(process.env.EUFY_ATTEMPT_LIMIT??3);
    if(priorError?.attempts>=attemptLimit)continue;
-   const camera=devices.find(d=>d.sn===row.device_sn);const channel=camera?.channel;
+   const camera=devices.find(d=>d.sn===row.device_sn);
+   // Removed-camera files remain accessible by original path on station channel 0.
+   const channel=camera?.channel??0;
    if(!Number.isInteger(channel)){console.log('Skipping row with no authoritative camera channel');continue;}
    try{
     const ecc=crypto.createECDH('prime256v1');if(mode==='decode-local')ecc.setPrivateKey(fs.readFileSync(`${folder}/transfer-private-key`));else ecc.generateKeys();
-    const privateKey=ecc.getPrivateKey();const key=ecc.getPublicKey('hex','uncompressed').slice(2);
+    const scalar=ecc.getPrivateKey();
+    const privateKey=Buffer.concat([Buffer.alloc(32-scalar.length),scalar]);const key=ecc.getPublicKey('hex','uncompressed').slice(2);
     fs.writeFileSync(`${folder}/transfer-private-key`,privateKey,{mode:0o600});
     const frames=mode==='decode-local'?JSON.parse(fs.readFileSync(`${folder}/transfer-frames.json`)).map(f=>({...f,raw:Buffer.from(f.raw,'base64')})):await receive(session,{account_id:admin,cmd:1024,mChannel:channel,mValue3:1024,payload:{filepath:row.storage_path,key}},channel,`${folder}/transfer-frames.json`);
     const decoded=decodeHomebaseFrames(frames,privateKey,Number(row.frame_num)||0);
@@ -121,9 +133,12 @@ try{
     const audioPath=`${folder}/audio.aac`;if(decoded.audio.length)fs.writeFileSync(audioPath,decoded.audio,{mode:0o600});
     const args=['-nostdin','-hide_banner','-loglevel','error','-threads','2','-r',String(fps),'-i',raw,...(decoded.audio.length?['-i',audioPath]:[]),'-c','copy','-movflags','+faststart','-y',`${folder}/video.mp4`];
     const mux=spawnSync('ffmpeg',args,{encoding:'utf8'});if(mux.status!==0)throw new Error('Video mux failed: '+mux.stderr.slice(0,200));
+    const probe=spawnSync('ffprobe',['-v','error','-select_streams','v:0','-show_entries','stream=nb_frames','-of','json',`${folder}/video.mp4`],{encoding:'utf8'});
+    if(probe.status!==0||Number(JSON.parse(probe.stdout).streams?.[0]?.nb_frames)!==videoFrames)throw new Error('Muxed video picture count mismatch');
     const sampleIndices=[...new Set([0.1,0.5,0.9].map(f=>Math.min(videoFrames-1,Math.floor(videoFrames*f))))];
     const selection=sampleIndices.map(n=>`eq(n,${n})`).join('+');
-    const verify=spawnSync('ffmpeg',['-nostdin','-v','error','-threads','2','-i',`${folder}/video.mp4`,'-vf',`select='${selection}',scale='min(1280,iw)':-2`,'-fps_mode','vfr','-q:v','2','-y',`${folder}/sample-%02d.jpg`],{encoding:'utf8'});
+    // Keep the select counter across mid-clip resolution changes.
+    const verify=spawnSync('ffmpeg',['-nostdin','-v','error','-threads','2','-reinit_filter','0','-i',`${folder}/video.mp4`,'-vf',`select='${selection}',scale='min(1280,iw)':-2`,'-fps_mode','vfr','-q:v','2','-y',`${folder}/sample-%02d.jpg`],{encoding:'utf8'});
     if(verify.status!==0||verify.stderr.trim())throw new Error('Video decode check failed');
     const sampleFrames=sampleIndices.map((frameIndex,i)=>({file:`sample-${String(i+1).padStart(2,'0')}.jpg`,frameIndex,seconds:frameIndex/fps}));
     if(sampleFrames.some(s=>!fs.existsSync(`${folder}/${s.file}`)))throw new Error('Sample extraction was incomplete');
